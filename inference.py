@@ -4,40 +4,81 @@ import random
 from datetime import datetime
 from pathlib import Path
 from diffusers.utils import logging
+from typing import Optional, List, Union
+import yaml
 
 import imageio
+import json
 import numpy as np
 import torch
-import torch.nn.functional as F
+from safetensors import safe_open
 from PIL import Image
-from transformers import T5EncoderModel, T5Tokenizer
+from transformers import (
+    T5EncoderModel,
+    T5Tokenizer,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,
+)
+from huggingface_hub import hf_hub_download
 
 from ltx_video.models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
 )
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel
-from ltx_video.pipelines.pipeline_ltx_video import LTXVideoPipeline
+from ltx_video.pipelines.pipeline_ltx_video import (
+    ConditioningItem,
+    LTXVideoPipeline,
+    LTXMultiScalePipeline,
+)
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.utils.conditioning_method import ConditioningMethod
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
+from ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280
 MAX_NUM_FRAMES = 257
+
+logger = logging.get_logger("LTX-Video")
 
 
 def get_total_gpu_memory():
     if torch.cuda.is_available():
         total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         return total_memory
-    return None
+    return 0
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def load_image_to_tensor_with_resize_and_crop(
-    image_path, target_height=512, target_width=768
-):
-    image = Image.open(image_path).convert("RGB")
+    image_input: Union[str, Image.Image],
+    target_height: int = 512,
+    target_width: int = 768,
+    just_crop: bool = False,
+) -> torch.Tensor:
+    """Load and process an image into a tensor.
+
+    Args:
+        image_input: Either a file path (str) or a PIL Image object
+        target_height: Desired height of output tensor
+        target_width: Desired width of output tensor
+        just_crop: If True, only crop the image to the target size without resizing
+    """
+    if isinstance(image_input, str):
+        image = Image.open(image_input).convert("RGB")
+    elif isinstance(image_input, Image.Image):
+        image = image_input
+    else:
+        raise ValueError("image_input must be either a file path or a PIL Image object")
+
     input_width, input_height = image.size
     aspect_ratio_target = target_width / target_height
     aspect_ratio_frame = input_width / input_height
@@ -53,7 +94,8 @@ def load_image_to_tensor_with_resize_and_crop(
         y_start = (input_height - new_height) // 2
 
     image = image.crop((x_start, y_start, x_start + new_width, y_start + new_height))
-    image = image.resize((target_width, target_height))
+    if not just_crop:
+        image = image.resize((target_width, target_height))
     frame_tensor = torch.tensor(np.array(image)).permute(2, 0, 1).float()
     frame_tensor = (frame_tensor / 127.5) - 1.0
     # Create 5D tensor: (batch_size=1, channels=3, num_frames=1, height, width)
@@ -133,6 +175,8 @@ def seed_everething(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
 
 def main():
@@ -141,20 +185,6 @@ def main():
     )
 
     # Directories
-    parser.add_argument(
-        "--ckpt_path",
-        type=str,
-        required=True,
-        help="Path to a safetensors file that contains all model parts.",
-    )
-    parser.add_argument(
-        "--input_video_path",
-        type=str,
-        help="Path to the input video file (first frame used)",
-    )
-    parser.add_argument(
-        "--input_image_path", type=str, help="Path to the input image file"
-    )
     parser.add_argument(
         "--output_path",
         type=str,
@@ -165,43 +195,10 @@ def main():
 
     # Pipeline parameters
     parser.add_argument(
-        "--num_inference_steps", type=int, default=40, help="Number of inference steps"
-    )
-    parser.add_argument(
         "--num_images_per_prompt",
         type=int,
         default=1,
         help="Number of images per prompt",
-    )
-    parser.add_argument(
-        "--guidance_scale",
-        type=float,
-        default=3,
-        help="Guidance scale for the pipeline",
-    )
-    parser.add_argument(
-        "--stg_scale",
-        type=float,
-        default=1,
-        help="Spatiotemporal guidance scale for the pipeline. 0 to disable STG.",
-    )
-    parser.add_argument(
-        "--stg_rescale",
-        type=float,
-        default=0.7,
-        help="Spatiotemporal guidance rescaling scale for the pipeline. 1 to disable rescale.",
-    )
-    parser.add_argument(
-        "--stg_mode",
-        type=str,
-        default="stg_a",
-        help="Spatiotemporal guidance mode for the pipeline. Can be either stg_a or stg_r.",
-    )
-    parser.add_argument(
-        "--stg_skip_layers",
-        type=str,
-        default="19",
-        help="Attention layers to skip for spatiotemporal guidance. Comma separated list of integers.",
     )
     parser.add_argument(
         "--image_cond_noise_scale",
@@ -212,13 +209,13 @@ def main():
     parser.add_argument(
         "--height",
         type=int,
-        default=480,
+        default=704,
         help="Height of the output video frames. Optional if an input image provided.",
     )
     parser.add_argument(
         "--width",
         type=int,
-        default=704,
+        default=1216,
         help="Width of the output video frames. If None will infer from input image.",
     )
     parser.add_argument(
@@ -228,28 +225,18 @@ def main():
         help="Number of frames to generate in the output video",
     )
     parser.add_argument(
-        "--frame_rate", type=int, default=25, help="Frame rate for the output video"
-    )
-
-    parser.add_argument(
-        "--precision",
-        choices=["bfloat16", "mixed_precision"],
-        default="bfloat16",
-        help="Sets the precision for the transformer and tokenizer. Default is bfloat16. If 'mixed_precision' is enabled, it moves to mixed-precision.",
-    )
-
-    # VAE noise augmentation
-    parser.add_argument(
-        "--decode_timestep",
-        type=float,
-        default=0.05,
-        help="Timestep for decoding noise",
+        "--frame_rate", type=int, default=30, help="Frame rate for the output video"
     )
     parser.add_argument(
-        "--decode_noise_scale",
-        type=float,
-        default=0.025,
-        help="Noise level for decoding noise",
+        "--device",
+        default=None,
+        help="Device to run inference on. If not specified, will automatically detect and use CUDA or MPS if available, else CPU.",
+    )
+    parser.add_argument(
+        "--pipeline_config",
+        type=str,
+        default="configs/ltxv-13b-0.9.7-dev.yaml",
+        help="The path to the config file for the pipeline, which contains the parameters for the pipeline",
     )
 
     # Prompts
@@ -271,39 +258,243 @@ def main():
         help="Offloading unnecessary computations to CPU.",
     )
 
-    logger = logging.get_logger(__name__)
+    # video-to-video arguments:
+    parser.add_argument(
+        "--input_media_path",
+        type=str,
+        default=None,
+        help="Path to the input video (or imaage) to be modified using the video-to-video pipeline",
+    )
+
+    parser.add_argument(
+        "--strength",
+        type=float,
+        default=1.0,
+        help="Editing strength (noising level) for video-to-video pipeline.",
+    )
+
+    # Conditioning arguments
+    parser.add_argument(
+        "--conditioning_media_paths",
+        type=str,
+        nargs="*",
+        help="List of paths to conditioning media (images or videos). Each path will be used as a conditioning item.",
+    )
+    parser.add_argument(
+        "--conditioning_strengths",
+        type=float,
+        nargs="*",
+        help="List of conditioning strengths (between 0 and 1) for each conditioning item. Must match the number of conditioning items.",
+    )
+    parser.add_argument(
+        "--conditioning_start_frames",
+        type=int,
+        nargs="*",
+        help="List of frame indices where each conditioning item should be applied. Must match the number of conditioning items.",
+    )
 
     args = parser.parse_args()
-
     logger.warning(f"Running generation with arguments: {args}")
+    infer(**vars(args))
 
-    seed_everething(args.seed)
 
-    offload_to_cpu = False if not args.offload_to_cpu else get_total_gpu_memory() < 30
+def create_ltx_video_pipeline(
+    ckpt_path: str,
+    precision: str,
+    text_encoder_model_name_or_path: str,
+    sampler: Optional[str] = None,
+    device: Optional[str] = None,
+    enhance_prompt: bool = False,
+    prompt_enhancer_image_caption_model_name_or_path: Optional[str] = None,
+    prompt_enhancer_llm_model_name_or_path: Optional[str] = None,
+) -> LTXVideoPipeline:
+    ckpt_path = Path(ckpt_path)
+    assert os.path.exists(
+        ckpt_path
+    ), f"Ckpt path provided (--ckpt_path) {ckpt_path} does not exist"
+
+    with safe_open(ckpt_path, framework="pt") as f:
+        metadata = f.metadata()
+        config_str = metadata.get("config")
+        configs = json.loads(config_str)
+        allowed_inference_steps = configs.get("allowed_inference_steps", None)
+
+    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
+    transformer = Transformer3DModel.from_pretrained(ckpt_path)
+
+    # Use constructor if sampler is specified, otherwise use from_pretrained
+    if sampler == "from_checkpoint" or not sampler:
+        scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
+    else:
+        scheduler = RectifiedFlowScheduler(
+            sampler=("Uniform" if sampler.lower() == "uniform" else "LinearQuadratic")
+        )
+
+    text_encoder = T5EncoderModel.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="text_encoder"
+    )
+    patchifier = SymmetricPatchifier(patch_size=1)
+    tokenizer = T5Tokenizer.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="tokenizer"
+    )
+
+    transformer = transformer.to(device)
+    vae = vae.to(device)
+    text_encoder = text_encoder.to(device)
+
+    if enhance_prompt:
+        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(
+            prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+        )
+        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained(
+            prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+        )
+        prompt_enhancer_llm_model = AutoModelForCausalLM.from_pretrained(
+            prompt_enhancer_llm_model_name_or_path,
+            torch_dtype="bfloat16",
+        )
+        prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(
+            prompt_enhancer_llm_model_name_or_path,
+        )
+    else:
+        prompt_enhancer_image_caption_model = None
+        prompt_enhancer_image_caption_processor = None
+        prompt_enhancer_llm_model = None
+        prompt_enhancer_llm_tokenizer = None
+
+    vae = vae.to(torch.bfloat16)
+    if precision == "bfloat16" and transformer.dtype != torch.bfloat16:
+        transformer = transformer.to(torch.bfloat16)
+    text_encoder = text_encoder.to(torch.bfloat16)
+
+    # Use submodels for the pipeline
+    submodel_dict = {
+        "transformer": transformer,
+        "patchifier": patchifier,
+        "text_encoder": text_encoder,
+        "tokenizer": tokenizer,
+        "scheduler": scheduler,
+        "vae": vae,
+        "prompt_enhancer_image_caption_model": prompt_enhancer_image_caption_model,
+        "prompt_enhancer_image_caption_processor": prompt_enhancer_image_caption_processor,
+        "prompt_enhancer_llm_model": prompt_enhancer_llm_model,
+        "prompt_enhancer_llm_tokenizer": prompt_enhancer_llm_tokenizer,
+        "allowed_inference_steps": allowed_inference_steps,
+    }
+
+    pipeline = LTXVideoPipeline(**submodel_dict)
+    pipeline = pipeline.to(device)
+    return pipeline
+
+
+def create_latent_upsampler(latent_upsampler_model_path: str, device: str):
+    latent_upsampler = LatentUpsampler.from_pretrained(latent_upsampler_model_path)
+    latent_upsampler.to(device)
+    latent_upsampler.eval()
+    return latent_upsampler
+
+
+def infer(
+    output_path: Optional[str],
+    seed: int,
+    pipeline_config: str,
+    image_cond_noise_scale: float,
+    height: Optional[int],
+    width: Optional[int],
+    num_frames: int,
+    frame_rate: int,
+    prompt: str,
+    negative_prompt: str,
+    offload_to_cpu: bool,
+    input_media_path: Optional[str] = None,
+    strength: Optional[float] = 1.0,
+    conditioning_media_paths: Optional[List[str]] = None,
+    conditioning_strengths: Optional[List[float]] = None,
+    conditioning_start_frames: Optional[List[int]] = None,
+    device: Optional[str] = None,
+    **kwargs,
+):
+    # check if pipeline_config is a file
+    if not os.path.isfile(pipeline_config):
+        raise ValueError(f"Pipeline config file {pipeline_config} does not exist")
+    with open(pipeline_config, "r") as f:
+        pipeline_config = yaml.safe_load(f)
+
+    models_dir = "MODEL_DIR"
+
+    ltxv_model_name_or_path = pipeline_config["checkpoint_path"]
+    if not os.path.isfile(ltxv_model_name_or_path):
+        ltxv_model_path = hf_hub_download(
+            repo_id="Lightricks/LTX-Video",
+            filename=ltxv_model_name_or_path,
+            local_dir=models_dir,
+            repo_type="model",
+        )
+    else:
+        ltxv_model_path = ltxv_model_name_or_path
+
+    spatial_upscaler_model_name_or_path = pipeline_config.get(
+        "spatial_upscaler_model_path"
+    )
+    if spatial_upscaler_model_name_or_path and not os.path.isfile(
+        spatial_upscaler_model_name_or_path
+    ):
+        spatial_upscaler_model_path = hf_hub_download(
+            repo_id="Lightricks/LTX-Video",
+            filename=spatial_upscaler_model_name_or_path,
+            local_dir=models_dir,
+            repo_type="model",
+        )
+    else:
+        spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
+
+    if kwargs.get("input_image_path", None):
+        logger.warning(
+            "Please use conditioning_media_paths instead of input_image_path."
+        )
+        assert not conditioning_media_paths and not conditioning_start_frames
+        conditioning_media_paths = [kwargs["input_image_path"]]
+        conditioning_start_frames = [0]
+
+    # Validate conditioning arguments
+    if conditioning_media_paths:
+        # Use default strengths of 1.0
+        if not conditioning_strengths:
+            conditioning_strengths = [1.0] * len(conditioning_media_paths)
+        if not conditioning_start_frames:
+            raise ValueError(
+                "If `conditioning_media_paths` is provided, "
+                "`conditioning_start_frames` must also be provided"
+            )
+        if len(conditioning_media_paths) != len(conditioning_strengths) or len(
+            conditioning_media_paths
+        ) != len(conditioning_start_frames):
+            raise ValueError(
+                "`conditioning_media_paths`, `conditioning_strengths`, "
+                "and `conditioning_start_frames` must have the same length"
+            )
+        if any(s < 0 or s > 1 for s in conditioning_strengths):
+            raise ValueError("All conditioning strengths must be between 0 and 1")
+        if any(f < 0 or f >= num_frames for f in conditioning_start_frames):
+            raise ValueError(
+                f"All conditioning start frames must be between 0 and {num_frames-1}"
+            )
+
+    seed_everething(seed)
+    if offload_to_cpu and not torch.cuda.is_available():
+        logger.warning(
+            "offload_to_cpu is set to True, but offloading will not occur since the model is already running on CPU."
+        )
+        offload_to_cpu = False
+    else:
+        offload_to_cpu = offload_to_cpu and get_total_gpu_memory() < 30
 
     output_dir = (
-        Path(args.output_path)
-        if args.output_path
+        Path(output_path)
+        if output_path
         else Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load image
-    if args.input_image_path:
-        media_items_prepad = load_image_to_tensor_with_resize_and_crop(
-            args.input_image_path, args.height, args.width
-        )
-    else:
-        media_items_prepad = None
-
-    height = args.height if args.height else media_items_prepad.shape[-2]
-    width = args.width if args.width else media_items_prepad.shape[-1]
-    num_frames = args.num_frames
-
-    if height > MAX_HEIGHT or width > MAX_WIDTH or num_frames > MAX_NUM_FRAMES:
-        logger.warning(
-            f"Input resolution or number of frames {height}x{width}x{num_frames} is too big, it is suggested to use the resolution below {MAX_HEIGHT}x{MAX_WIDTH}x{MAX_NUM_FRAMES}."
-        )
 
     # Adjust dimensions to be divisible by 32 and num_frames to be (N * 8 + 1)
     height_padded = ((height - 1) // 32 + 1) * 32
@@ -316,100 +507,122 @@ def main():
         f"Padded dimensions: {height_padded}x{width_padded}x{num_frames_padded}"
     )
 
-    if media_items_prepad is not None:
-        media_items = F.pad(
-            media_items_prepad, padding, mode="constant", value=-1
-        )  # -1 is the value for padding since the image is normalized to -1, 1
+    prompt_enhancement_words_threshold = pipeline_config[
+        "prompt_enhancement_words_threshold"
+    ]
+
+    prompt_word_count = len(prompt.split())
+    enhance_prompt = (
+        prompt_enhancement_words_threshold > 0
+        and prompt_word_count < prompt_enhancement_words_threshold
+    )
+
+    if prompt_enhancement_words_threshold > 0 and not enhance_prompt:
+        logger.info(
+            f"Prompt has {prompt_word_count} words, which exceeds the threshold of {prompt_enhancement_words_threshold}. Prompt enhancement disabled."
+        )
+
+    precision = pipeline_config["precision"]
+    text_encoder_model_name_or_path = pipeline_config["text_encoder_model_name_or_path"]
+    sampler = pipeline_config["sampler"]
+    prompt_enhancer_image_caption_model_name_or_path = pipeline_config[
+        "prompt_enhancer_image_caption_model_name_or_path"
+    ]
+    prompt_enhancer_llm_model_name_or_path = pipeline_config[
+        "prompt_enhancer_llm_model_name_or_path"
+    ]
+
+    pipeline = create_ltx_video_pipeline(
+        ckpt_path=ltxv_model_path,
+        precision=precision,
+        text_encoder_model_name_or_path=text_encoder_model_name_or_path,
+        sampler=sampler,
+        device=kwargs.get("device", get_device()),
+        enhance_prompt=enhance_prompt,
+        prompt_enhancer_image_caption_model_name_or_path=prompt_enhancer_image_caption_model_name_or_path,
+        prompt_enhancer_llm_model_name_or_path=prompt_enhancer_llm_model_name_or_path,
+    )
+
+    if pipeline_config.get("pipeline_type", None) == "multi-scale":
+        if not spatial_upscaler_model_path:
+            raise ValueError(
+                "spatial upscaler model path is missing from pipeline config file and is required for multi-scale rendering"
+            )
+        latent_upsampler = create_latent_upsampler(
+            spatial_upscaler_model_path, pipeline.device
+        )
+        pipeline = LTXMultiScalePipeline(pipeline, latent_upsampler=latent_upsampler)
+
+    media_item = None
+    if input_media_path:
+        media_item = load_media_file(
+            media_path=input_media_path,
+            height=height,
+            width=width,
+            max_frames=num_frames_padded,
+            padding=padding,
+        )
+
+    conditioning_items = (
+        prepare_conditioning(
+            conditioning_media_paths=conditioning_media_paths,
+            conditioning_strengths=conditioning_strengths,
+            conditioning_start_frames=conditioning_start_frames,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            padding=padding,
+            pipeline=pipeline,
+        )
+        if conditioning_media_paths
+        else None
+    )
+
+    stg_mode = pipeline_config.get("stg_mode", "attention_values")
+    del pipeline_config["stg_mode"]
+    if stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
+        skip_layer_strategy = SkipLayerStrategy.AttentionValues
+    elif stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
+        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
+    elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
+        skip_layer_strategy = SkipLayerStrategy.Residual
+    elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":
+        skip_layer_strategy = SkipLayerStrategy.TransformerBlock
     else:
-        media_items = None
-
-    ckpt_path = Path(args.ckpt_path)
-    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-    transformer = Transformer3DModel.from_pretrained(ckpt_path)
-    scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
-
-    text_encoder = T5EncoderModel.from_pretrained(
-        "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="text_encoder"
-    )
-    patchifier = SymmetricPatchifier(patch_size=1)
-    tokenizer = T5Tokenizer.from_pretrained(
-        "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="tokenizer"
-    )
-
-    if torch.cuda.is_available():
-        transformer = transformer.cuda()
-        vae = vae.cuda()
-        text_encoder = text_encoder.cuda()
-
-    vae = vae.to(torch.bfloat16)
-    if args.precision == "bfloat16" and transformer.dtype != torch.bfloat16:
-        transformer = transformer.to(torch.bfloat16)
-    text_encoder = text_encoder.to(torch.bfloat16)
-
-    # Set spatiotemporal guidance
-    skip_block_list = [int(x.strip()) for x in args.stg_skip_layers.split(",")]
-    skip_layer_strategy = (
-        SkipLayerStrategy.Attention
-        if args.stg_mode.lower() == "stg_a"
-        else SkipLayerStrategy.Residual
-    )
-
-    # Use submodels for the pipeline
-    submodel_dict = {
-        "transformer": transformer,
-        "patchifier": patchifier,
-        "text_encoder": text_encoder,
-        "tokenizer": tokenizer,
-        "scheduler": scheduler,
-        "vae": vae,
-    }
-
-    pipeline = LTXVideoPipeline(**submodel_dict)
-    if torch.cuda.is_available():
-        pipeline = pipeline.to("cuda")
+        raise ValueError(f"Invalid spatiotemporal guidance mode: {stg_mode}")
 
     # Prepare input for the pipeline
     sample = {
-        "prompt": args.prompt,
+        "prompt": prompt,
         "prompt_attention_mask": None,
-        "negative_prompt": args.negative_prompt,
+        "negative_prompt": negative_prompt,
         "negative_prompt_attention_mask": None,
-        "media_items": media_items,
     }
 
-    generator = torch.Generator(
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    ).manual_seed(args.seed)
+    device = device or get_device()
+    generator = torch.Generator(device=device).manual_seed(seed)
 
     images = pipeline(
-        num_inference_steps=args.num_inference_steps,
-        num_images_per_prompt=args.num_images_per_prompt,
-        guidance_scale=args.guidance_scale,
+        **pipeline_config,
         skip_layer_strategy=skip_layer_strategy,
-        skip_block_list=skip_block_list,
-        stg_scale=args.stg_scale,
-        do_rescaling=args.stg_rescale != 1,
-        rescaling_scale=args.stg_rescale,
         generator=generator,
         output_type="pt",
         callback_on_step_end=None,
         height=height_padded,
         width=width_padded,
         num_frames=num_frames_padded,
-        frame_rate=args.frame_rate,
+        frame_rate=frame_rate,
         **sample,
+        media_items=media_item,
+        strength=strength,
+        conditioning_items=conditioning_items,
         is_video=True,
         vae_per_channel_normalize=True,
-        conditioning_method=(
-            ConditioningMethod.FIRST_FRAME
-            if media_items is not None
-            else ConditioningMethod.UNCONDITIONAL
-        ),
-        image_cond_noise_scale=args.image_cond_noise_scale,
-        decode_timestep=args.decode_timestep,
-        decode_noise_scale=args.decode_noise_scale,
-        mixed_precision=(args.precision == "mixed_precision"),
+        image_cond_noise_scale=image_cond_noise_scale,
+        mixed_precision=(precision == "mixed_precision"),
         offload_to_cpu=offload_to_cpu,
+        device=device,
+        enhance_prompt=enhance_prompt,
     ).images
 
     # Crop the padded images to the desired resolution and number of frames
@@ -427,29 +640,25 @@ def main():
         video_np = images[i].permute(1, 2, 3, 0).cpu().float().numpy()
         # Unnormalizing images to [0, 255] range
         video_np = (video_np * 255).astype(np.uint8)
-        fps = args.frame_rate
+        fps = frame_rate
         height, width = video_np.shape[1:3]
         # In case a single image is generated
         if video_np.shape[0] == 1:
             output_filename = get_unique_filename(
                 f"image_output_{i}",
                 ".png",
-                prompt=args.prompt,
-                seed=args.seed,
+                prompt=prompt,
+                seed=seed,
                 resolution=(height, width, num_frames),
                 dir=output_dir,
             )
             imageio.imwrite(output_filename, video_np[0])
         else:
-            if args.input_image_path:
-                base_filename = f"img_to_vid_{i}"
-            else:
-                base_filename = f"text_to_vid_{i}"
             output_filename = get_unique_filename(
-                base_filename,
+                f"video_output_{i}",
                 ".mp4",
-                prompt=args.prompt,
-                seed=args.seed,
+                prompt=prompt,
+                seed=seed,
                 resolution=(height, width, num_frames),
                 dir=output_dir,
             )
@@ -459,29 +668,108 @@ def main():
                 for frame in video_np:
                     video.append_data(frame)
 
-            # Write condition image
-            if args.input_image_path:
-                reference_image = (
-                    (
-                        media_items_prepad[0, :, 0].permute(1, 2, 0).cpu().data.numpy()
-                        + 1.0
-                    )
-                    / 2.0
-                    * 255
-                )
-                imageio.imwrite(
-                    get_unique_filename(
-                        base_filename,
-                        ".png",
-                        prompt=args.prompt,
-                        seed=args.seed,
-                        resolution=(height, width, num_frames),
-                        dir=output_dir,
-                        endswith="_condition",
-                    ),
-                    reference_image.astype(np.uint8),
-                )
-        logger.warning(f"Output saved to {output_dir}")
+        logger.warning(f"Output saved to {output_filename}")
+
+
+def prepare_conditioning(
+    conditioning_media_paths: List[str],
+    conditioning_strengths: List[float],
+    conditioning_start_frames: List[int],
+    height: int,
+    width: int,
+    num_frames: int,
+    padding: tuple[int, int, int, int],
+    pipeline: LTXVideoPipeline,
+) -> Optional[List[ConditioningItem]]:
+    """Prepare conditioning items based on input media paths and their parameters.
+
+    Args:
+        conditioning_media_paths: List of paths to conditioning media (images or videos)
+        conditioning_strengths: List of conditioning strengths for each media item
+        conditioning_start_frames: List of frame indices where each item should be applied
+        height: Height of the output frames
+        width: Width of the output frames
+        num_frames: Number of frames in the output video
+        padding: Padding to apply to the frames
+        pipeline: LTXVideoPipeline object used for condition video trimming
+
+    Returns:
+        A list of ConditioningItem objects.
+    """
+    conditioning_items = []
+    for path, strength, start_frame in zip(
+        conditioning_media_paths, conditioning_strengths, conditioning_start_frames
+    ):
+        num_input_frames = orig_num_input_frames = get_media_num_frames(path)
+        if hasattr(pipeline, "trim_conditioning_sequence") and callable(
+            getattr(pipeline, "trim_conditioning_sequence")
+        ):
+            num_input_frames = pipeline.trim_conditioning_sequence(
+                start_frame, orig_num_input_frames, num_frames
+            )
+        if num_input_frames < orig_num_input_frames:
+            logger.warning(
+                f"Trimming conditioning video {path} from {orig_num_input_frames} to {num_input_frames} frames."
+            )
+
+        media_tensor = load_media_file(
+            media_path=path,
+            height=height,
+            width=width,
+            max_frames=num_input_frames,
+            padding=padding,
+            just_crop=True,
+        )
+        conditioning_items.append(ConditioningItem(media_tensor, start_frame, strength))
+    return conditioning_items
+
+
+def get_media_num_frames(media_path: str) -> int:
+    is_video = any(
+        media_path.lower().endswith(ext) for ext in [".mp4", ".avi", ".mov", ".mkv"]
+    )
+    num_frames = 1
+    if is_video:
+        reader = imageio.get_reader(media_path)
+        num_frames = reader.count_frames()
+        reader.close()
+    return num_frames
+
+
+def load_media_file(
+    media_path: str,
+    height: int,
+    width: int,
+    max_frames: int,
+    padding: tuple[int, int, int, int],
+    just_crop: bool = False,
+) -> torch.Tensor:
+    is_video = any(
+        media_path.lower().endswith(ext) for ext in [".mp4", ".avi", ".mov", ".mkv"]
+    )
+    if is_video:
+        reader = imageio.get_reader(media_path)
+        num_input_frames = min(reader.count_frames(), max_frames)
+
+        # Read and preprocess the relevant frames from the video file.
+        frames = []
+        for i in range(num_input_frames):
+            frame = Image.fromarray(reader.get_data(i))
+            frame_tensor = load_image_to_tensor_with_resize_and_crop(
+                frame, height, width, just_crop=just_crop
+            )
+            frame_tensor = torch.nn.functional.pad(frame_tensor, padding)
+            frames.append(frame_tensor)
+        reader.close()
+
+        # Stack frames along the temporal dimension
+        media_tensor = torch.cat(frames, dim=2)
+    else:  # Input image
+        media_tensor = load_image_to_tensor_with_resize_and_crop(
+            media_path, height, width, just_crop=just_crop
+        )
+        media_tensor = torch.nn.functional.pad(media_tensor, padding)
+    return media_tensor
 
 
 if __name__ == "__main__":

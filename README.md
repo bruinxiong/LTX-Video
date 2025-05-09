@@ -6,14 +6,16 @@ This is the official repository for LTX-Video.
 
 [Website](https://www.lightricks.com/ltxv) |
 [Model](https://huggingface.co/Lightricks/LTX-Video) |
-[Demo](https://fal.ai/models/fal-ai/ltx-video) |
-[Paper (Soon)](https://github.com/Lightricks/LTX-Video)
+[Demo](https://app.ltx.studio/ltx-video) |
+[Paper](https://arxiv.org/abs/2501.00103) |
+[Discord](https://discord.gg/Mn8BRgUKKy)
 
 </div>
 
 ## Table of Contents
 
 - [Introduction](#introduction)
+- [What's new](#news)
 - [Quick Start Guide](#quick-start-guide)
   - [Online demo](#online-demo)
   - [Run locally](#run-locally)
@@ -30,9 +32,11 @@ This is the official repository for LTX-Video.
 # Introduction
 
 LTX-Video is the first DiT-based video generation model that can generate high-quality videos in *real-time*.
-It can generate 24 FPS videos at 768x512 resolution, faster than it takes to watch them.
+It can generate 30 FPS videos at 1216×704 resolution, faster than it takes to watch them.
 The model is trained on a large-scale dataset of diverse videos and can generate high-resolution videos
 with realistic and diverse content.
+
+The model supports text-to-image, image-to-video, keyframe-based animation, video extension (both forward and backward), video-to-video transformations, and any combination of these features.
 
 | | | | |
 |:---:|:---:|:---:|:---:|
@@ -41,19 +45,89 @@ with realistic and diverse content.
 | ![example9](./docs/_static/ltx-video_example_00009.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A man with graying hair, a beard, and a gray shirt...</summary>A man with graying hair, a beard, and a gray shirt looks down and to his right, then turns his head to the left. The camera angle is a close-up, focused on the man's face. The lighting is dim, with a greenish tint. The scene appears to be real-life footage. Step</details> | ![example10](./docs/_static/ltx-video_example_00010.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A clear, turquoise river flows through a rocky canyon...</summary>A clear, turquoise river flows through a rocky canyon, cascading over a small waterfall and forming a pool of water at the bottom.The river is the main focus of the scene, with its clear water reflecting the surrounding trees and rocks. The canyon walls are steep and rocky, with some vegetation growing on them. The trees are mostly pine trees, with their green needles contrasting with the brown and gray rocks. The overall tone of the scene is one of peace and tranquility.</details> | ![example11](./docs/_static/ltx-video_example_00011.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A man in a suit enters a room and speaks to two women...</summary>A man in a suit enters a room and speaks to two women sitting on a couch. The man, wearing a dark suit with a gold tie, enters the room from the left and walks towards the center of the frame. He has short gray hair, light skin, and a serious expression. He places his right hand on the back of a chair as he approaches the couch. Two women are seated on a light-colored couch in the background. The woman on the left wears a light blue sweater and has short blonde hair. The woman on the right wears a white sweater and has short blonde hair. The camera remains stationary, focusing on the man as he enters the room. The room is brightly lit, with warm tones reflecting off the walls and furniture. The scene appears to be from a film or television show.</details> | ![example12](./docs/_static/ltx-video_example_00012.gif)<br><details style="max-width: 300px; margin: auto;"><summary>The waves crash against the jagged rocks of the shoreline...</summary>The waves crash against the jagged rocks of the shoreline, sending spray high into the air.The rocks are a dark gray color, with sharp edges and deep crevices. The water is a clear blue-green, with white foam where the waves break against the rocks. The sky is a light gray, with a few white clouds dotting the horizon.</details> |
 | ![example13](./docs/_static/ltx-video_example_00013.gif)<br><details style="max-width: 300px; margin: auto;"><summary>The camera pans across a cityscape of tall buildings...</summary>The camera pans across a cityscape of tall buildings with a circular building in the center. The camera moves from left to right, showing the tops of the buildings and the circular building in the center. The buildings are various shades of gray and white, and the circular building has a green roof. The camera angle is high, looking down at the city. The lighting is bright, with the sun shining from the upper left, casting shadows from the buildings. The scene is computer-generated imagery.</details> | ![example14](./docs/_static/ltx-video_example_00014.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A man walks towards a window, looks out, and then turns around...</summary>A man walks towards a window, looks out, and then turns around. He has short, dark hair, dark skin, and is wearing a brown coat over a red and gray scarf. He walks from left to right towards a window, his gaze fixed on something outside. The camera follows him from behind at a medium distance. The room is brightly lit, with white walls and a large window covered by a white curtain. As he approaches the window, he turns his head slightly to the left, then back to the right. He then turns his entire body to the right, facing the window. The camera remains stationary as he stands in front of the window. The scene is captured in real-life footage.</details> | ![example15](./docs/_static/ltx-video_example_00015.gif)<br><details style="max-width: 300px; margin: auto;"><summary>Two police officers in dark blue uniforms and matching hats...</summary>Two police officers in dark blue uniforms and matching hats enter a dimly lit room through a doorway on the left side of the frame. The first officer, with short brown hair and a mustache, steps inside first, followed by his partner, who has a shaved head and a goatee. Both officers have serious expressions and maintain a steady pace as they move deeper into the room. The camera remains stationary, capturing them from a slightly low angle as they enter. The room has exposed brick walls and a corrugated metal ceiling, with a barred window visible in the background. The lighting is low-key, casting shadows on the officers' faces and emphasizing the grim atmosphere. The scene appears to be from a film or television show.</details> | ![example16](./docs/_static/ltx-video_example_00016.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A woman with short brown hair, wearing a maroon sleeveless top...</summary>A woman with short brown hair, wearing a maroon sleeveless top and a silver necklace, walks through a room while talking, then a woman with pink hair and a white shirt appears in the doorway and yells. The first woman walks from left to right, her expression serious; she has light skin and her eyebrows are slightly furrowed. The second woman stands in the doorway, her mouth open in a yell; she has light skin and her eyes are wide. The room is dimly lit, with a bookshelf visible in the background. The camera follows the first woman as she walks, then cuts to a close-up of the second woman's face. The scene is captured in real-life footage.</details> |
 
+# News
+
+## May, 5th, 2025: New model 13B v0.9.7:
+- Release a new 13B model [ltxv-13b-0.9.7-dev](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev.safetensors)
+- Release a new quantized model [ltxv-13b-0.9.7-dev-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev-fp8.safetensors) for faster inference with less VRam (Supported in the [official CompfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
+- Release a new upscalers
+  * [ltxv-temporal-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-temporal-upscaler-0.9.7.safetensors)
+  * [ltxv-spatial-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-spatial-upscaler-0.9.7.safetensors)
+- Breakthrough prompt adherence and physical understanding.
+- New Pipeline for multi-scale video rendering for fast and high quality results
+
+
+## April, 15th, 2025: New checkpoints v0.9.6:
+- Release a new checkpoint [ltxv-2b-0.9.6-dev-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-dev-04-25.safetensors) with improved quality
+- Release a new distilled model [ltxv-2b-0.9.6-distilled-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-distilled-04-25.safetensors)
+    * 15x faster inference than non-distilled model.
+    * Does not require classifier-free guidance and spatio-temporal guidance.
+    * Supports sampling with 8 (recommended), 4, 2 or 1 diffusion steps.
+- Improved prompt adherence, motion quality and fine details.
+- New default resolution and FPS: 1216 × 704 pixels at 30 FPS
+    * Still real time on H100 with the distilled model.
+    * Other resolutions and FPS are still supported.
+- Support stochastic inference (can improve visual quality when using the distilled model)
+
+## March, 5th, 2025: New checkpoint v0.9.5
+- New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/ltx-video-2b-v0.9.5.license.txt))
+- Release a new checkpoint v0.9.5 with improved quality
+- Support keyframes and video extension
+- Support higher resolutions
+- Improved prompt understanding
+- Improved VAE
+- New online web app in [LTX-Studio](https://app.ltx.studio/ltx-video)
+- Automatic prompt enhancement
+
+## February, 20th, 2025: More inference options
+- Improve STG (Spatiotemporal Guidance) for LTX-Video
+- Support MPS on macOS with PyTorch 2.3.0
+- Add support for 8-bit model, LTX-VideoQ8
+- Add TeaCache for LTX-Video
+- Add [ComfyUI-LTXTricks](#comfyui-integration)
+- Add Diffusion-Pipe
+
+## December 31st, 2024: Research paper
+- Release the [research paper](https://arxiv.org/abs/2501.00103)
+
+## December 20th, 2024: New checkpoint v0.9.1
+- Release a new checkpoint v0.9.1 with improved quality
+- Support for STG / PAG
+- Support loading checkpoints of LTX-Video in Diffusers format (conversion is done on-the-fly)
+- Support offloading unused parts to CPU
+- Support the new timestep-conditioned VAE decoder
+- Reference contributions from the community in the readme file
+- Relax transformers dependency
+
+## November 21th, 2024: Initial release v0.9.0
+- Initial release of LTX-Video
+- Support text-to-video and image-to-video generation
+
+
+# Models
+
+| Model              | Version | Notes                                                                                      | inference.py config                                                                                                                                      | ComfyUI workflow (Recommended) |
+|--------------------|---------|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|------------------|
+| ltxv-13b           | 0.9.7   | Highest quality, requires more VRAM                                                      | [ltxv-13b-0.9.7-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-13b-0.9.7-dev.yaml)                                             | [ltxv-13b-i2v-base.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-base.json)             |
+| ltxv-13b-fp8 | 0.9.7   | Quantized version of ltxv-13b | Coming soon | [ltxv-13b-i2v-base-fp8.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-base-fp8.json) |
+| ltxv-2b            | 0.9.6   | Good quality, lower VRAM requirement than ltxv-13b                                              | [ltxv-2b-0.9.6-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-dev.yaml)                                                 | [ltxvideo-i2v.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/low_level/ltxvideo-i2v.json)             |
+| ltxv-2b-distilled  | 0.9.6   | 15× faster, real-time capable, fewer steps needed, no STG/CFG required                     | [ltxv-2b-0.9.6-distilled.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-distilled.yaml)                                     | [ltxvideo-i2v-distilled.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/low_level/ltxvideo-i2v-distilled.json)             |
+
+
 # Quick Start Guide
 
-## Online demo
-The model is accessible right away via following links:
-- [HF Playground](https://huggingface.co/spaces/Lightricks/LTX-Video-Playground)
-- [Replicate text-to-video and image-to-video](https://replicate.com/lightricks/ltx-video)
+## Online inference
+The model is accessible right away via the following links:
+- [LTX-Studio image-to-video](https://app.ltx.studio/ltx-video)
 - [Fal.ai text-to-video](https://fal.ai/models/fal-ai/ltx-video)
 - [Fal.ai image-to-video](https://fal.ai/models/fal-ai/ltx-video/image-to-video)
+- [Replicate text-to-video and image-to-video](https://replicate.com/lightricks/ltx-video)
 
 ## Run locally
 
 ### Installation
 The codebase was tested with Python 3.10.5, CUDA version 12.2, and supports PyTorch >= 2.1.2.
+On macos, MPS was tested with PyTorch 2.3.0, and should support PyTorch == 2.3 or >= 2.6.
 
 ```bash
 git clone https://github.com/Lightricks/LTX-Video.git
@@ -65,29 +139,40 @@ source env/bin/activate
 python -m pip install -e .\[inference-script\]
 ```
 
-Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/LTX-Video)
-
-```python
-from huggingface_hub import hf_hub_download
-
-model_path = 'PATH'   # The local directory to save downloaded checkpoint
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.1.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
-```
-
 ### Inference
+
+📝 **Note:** For best results, we recommend using our [ComfyUI](#comfyui-integration) workflow. We’re working on updating the inference.py script to match the high quality and output fidelity of ComfyUI.
 
 To use our model, please follow the inference code in [inference.py](./inference.py):
 
 #### For text-to-video generation:
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 #### For image-to-video generation:
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --input_image_path IMAGE_PATH --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --conditioning_media_paths IMAGE_PATH --conditioning_start_frames 0 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
+```
+
+#### Extending a video:
+
+📝 **Note:** Input video segments must contain a multiple of 8 frames plus 1 (e.g., 9, 17, 25, etc.), and the target frame number should be a multiple of 8.
+
+
+```bash
+python inference.py --prompt "PROMPT" --conditioning_media_paths VIDEO_PATH --conditioning_start_frames START_FRAME --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
+```
+
+#### For video generation with multiple conditions:
+
+You can now generate a video conditioned on a set of images and/or short video segments.
+Simply provide a list of paths to the images or video segments you want to condition on, along with their target frame numbers in the generated video. You can also specify the conditioning strength for each item (default: 1.0).
+
+```bash
+python inference.py --prompt "PROMPT" --conditioning_media_paths IMAGE_OR_VIDEO_PATH_1 IMAGE_OR_VIDEO_PATH_2 --conditioning_start_frames TARGET_FRAME_1 TARGET_FRAME_2 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 ## ComfyUI Integration
@@ -95,6 +180,8 @@ To use our model with ComfyUI, please follow the instructions at [https://github
 
 ## Diffusers Integration
 To use our model with the Diffusers Python library, check out the [official documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/ltx_video).
+
+Diffusers also support an 8-bit version of LTX-Video, [see details below](#ltx-videoq8)
 
 # Model User Guide
 
@@ -111,12 +198,19 @@ When writing prompts, focus on detailed, chronological descriptions of actions a
 * Note any changes or sudden events
 * See [examples](#introduction) for more inspiration.
 
+### Automatic Prompt Enhancement
+When using `inference.py`, shorts prompts (below `prompt_enhancement_words_threshold` words) are automatically enhanced by a language model. This is supported with text-to-video and image-to-video (first-frame conditioning).
+
+When using `LTXVideoPipeline` directly, you can enable prompt enhancement by setting `enhance_prompt=True`.
+
 ## 🎮 Parameter Guide
 
 * Resolution Preset: Higher resolutions for detailed scenes, lower for faster generation and simpler scenes. The model works on resolutions that are divisible by 32 and number of frames that are divisible by 8 + 1 (e.g. 257). In case the resolution or number of frames are not divisible by 32 or 8 + 1, the input will be padded with -1 and then cropped to the desired resolution and number of frames. The model works best on resolutions under 720 x 1280 and number of frames below 257
 * Seed: Save seed values to recreate specific styles or compositions you like
 * Guidance Scale: 3-3.5 are the recommended values
 * Inference Steps: More steps (40+) for quality, fewer steps (20-30) for speed
+
+📝 For advanced parameters usage, please see `python inference.py --help`
 
 ## Community Contribution
 
@@ -134,7 +228,7 @@ A community project providing additional nodes for enhanced control over the LTX
   - 🖼️ **Interpolation and Frame Setting:** Nodes for precise control of latents per frame. [Example workflow](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_interpolation.json).
 
 
-### LTX-VideoQ8 🎱
+### LTX-VideoQ8 🎱 <a id="ltx-videoq8"></a>
 
 **LTX-VideoQ8** is an 8-bit optimized version of [LTX-Video](https://github.com/Lightricks/LTX-Video), designed for faster performance on NVIDIA ADA GPUs.
 
@@ -144,6 +238,18 @@ A community project providing additional nodes for enhanced control over the LTX
   - 🎥 Generate 720x480x121 videos in under a minute on RTX 4060 (8GB VRAM)
   - 🛠️ Fine-tune 2B transformer models with precalculated latents
 - **Community Discussion:** [Reddit Thread](https://www.reddit.com/r/StableDiffusion/comments/1h79ks2/fast_ltx_video_on_rtx_4060_and_other_ada_gpus/)
+- **Diffusers integration:** A diffusers integration for the 8-bit model is already out! [Details here](https://github.com/sayakpaul/q8-ltx-video)
+
+
+### TeaCache for LTX-Video 🍵 <a id="TeaCache"></a>
+
+**TeaCache** is a training-free caching approach that leverages timestep differences across model outputs to accelerate LTX-Video inference by up to 2x without significant visual quality degradation.
+
+- **Repository:** [TeaCache4LTX-Video](https://github.com/ali-vilab/TeaCache/tree/main/TeaCache4LTX-Video)
+- **Features:**
+  - 🚀 Speeds up LTX-Video inference.
+  - 📊 Adjustable trade-offs between speed (up to 2x) and visual quality using configurable parameters.
+  - 🛠️ No retraining required: Works directly with existing models.
 
 ### Your Contribution
 
@@ -175,7 +281,7 @@ An experimental training framework with pipeline parallelism, enabling fine-tuni
 
 Want to work on cutting-edge AI research and make a real impact on millions of users worldwide?
 
-At **Lightricks**, an AI-first company, we’re revolutionizing how visual content is created.
+At **Lightricks**, an AI-first company, we're revolutionizing how visual content is created.
 
 If you are passionate about AI, computer vision, and video generation, we would love to hear from you!
 
@@ -187,4 +293,15 @@ We are grateful for the following awesome projects when implementing LTX-Video:
 * [DiT](https://github.com/facebookresearch/DiT) and [PixArt-alpha](https://github.com/PixArt-alpha/PixArt-alpha): vision transformers for image generation.
 
 
-[//]: # (## Citation)
+## Citation
+
+📄 Our tech report is out! If you find our work helpful, please ⭐️ star the repository and cite our paper.
+
+```
+@article{HaCohen2024LTXVideo,
+  title={LTX-Video: Realtime Video Latent Diffusion},
+  author={HaCohen, Yoav and Chiprut, Nisan and Brazowski, Benny and Shalem, Daniel and Moshe, Dudu and Richardson, Eitan and Levin, Eran and Shiran, Guy and Zabari, Nir and Gordon, Ori and Panet, Poriya and Weissbuch, Sapir and Kulikov, Victor and Bitterman, Yaki and Melumian, Zeev and Bibi, Ofir},
+  journal={arXiv preprint arXiv:2501.00103},
+  year={2024}
+}
+```

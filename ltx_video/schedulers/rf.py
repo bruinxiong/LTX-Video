@@ -22,15 +22,39 @@ from ltx_video.utils.diffusers_config_mapping import (
 )
 
 
+def linear_quadratic_schedule(num_steps, threshold_noise=0.025, linear_steps=None):
+    if num_steps == 1:
+        return torch.tensor([1.0])
+    if linear_steps is None:
+        linear_steps = num_steps // 2
+    linear_sigma_schedule = [
+        i * threshold_noise / linear_steps for i in range(linear_steps)
+    ]
+    threshold_noise_step_diff = linear_steps - threshold_noise * num_steps
+    quadratic_steps = num_steps - linear_steps
+    quadratic_coef = threshold_noise_step_diff / (linear_steps * quadratic_steps**2)
+    linear_coef = threshold_noise / linear_steps - 2 * threshold_noise_step_diff / (
+        quadratic_steps**2
+    )
+    const = quadratic_coef * (linear_steps**2)
+    quadratic_sigma_schedule = [
+        quadratic_coef * (i**2) + linear_coef * i + const
+        for i in range(linear_steps, num_steps)
+    ]
+    sigma_schedule = linear_sigma_schedule + quadratic_sigma_schedule + [1.0]
+    sigma_schedule = [1.0 - x for x in sigma_schedule]
+    return torch.tensor(sigma_schedule[:-1])
+
+
 def simple_diffusion_resolution_dependent_timestep_shift(
-    samples: Tensor,
+    samples_shape: torch.Size,
     timesteps: Tensor,
     n: int = 32 * 32,
 ) -> Tensor:
-    if len(samples.shape) == 3:
-        _, m, _ = samples.shape
-    elif len(samples.shape) in [4, 5]:
-        m = math.prod(samples.shape[2:])
+    if len(samples_shape) == 3:
+        _, m, _ = samples_shape
+    elif len(samples_shape) in [4, 5]:
+        m = math.prod(samples_shape[2:])
     else:
         raise ValueError(
             "Samples must have shape (b, t, c), (b, c, h, w) or (b, c, f, h, w)"
@@ -86,7 +110,9 @@ def strech_shifts_to_terminal(shifts: Tensor, terminal=0.1):
 
 
 def sd3_resolution_dependent_timestep_shift(
-    samples: Tensor, timesteps: Tensor, target_shift_terminal: Optional[float] = None
+    samples_shape: torch.Size,
+    timesteps: Tensor,
+    target_shift_terminal: Optional[float] = None,
 ) -> Tensor:
     """
     Shifts the timestep schedule as a function of the generated resolution.
@@ -99,7 +125,7 @@ def sd3_resolution_dependent_timestep_shift(
 
 
     Args:
-        samples (Tensor): A batch of samples with shape (batch_size, channels, height, width) or
+        samples_shape (torch.Size): The samples batch shape (batch_size, channels, height, width) or
             (batch_size, channels, frame, height, width).
         timesteps (Tensor): A batch of timesteps with shape (batch_size,).
         target_shift_terminal (float): The target terminal value for the shifted timesteps.
@@ -107,10 +133,10 @@ def sd3_resolution_dependent_timestep_shift(
     Returns:
         Tensor: The shifted timesteps.
     """
-    if len(samples.shape) == 3:
-        _, m, _ = samples.shape
-    elif len(samples.shape) in [4, 5]:
-        m = math.prod(samples.shape[2:])
+    if len(samples_shape) == 3:
+        _, m, _ = samples_shape
+    elif len(samples_shape) in [4, 5]:
+        m = math.prod(samples_shape[2:])
     else:
         raise ValueError(
             "Samples must have shape (b, t, c), (b, c, h, w) or (b, c, f, h, w)"
@@ -125,7 +151,7 @@ def sd3_resolution_dependent_timestep_shift(
 
 class TimestepShifter(ABC):
     @abstractmethod
-    def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
+    def shift_timesteps(self, samples_shape: torch.Size, timesteps: Tensor) -> Tensor:
         pass
 
 
@@ -157,53 +183,80 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         shifting: Optional[str] = None,
         base_resolution: int = 32**2,
         target_shift_terminal: Optional[float] = None,
+        sampler: Optional[str] = "Uniform",
+        shift: Optional[float] = None,
     ):
         super().__init__()
         self.init_noise_sigma = 1.0
         self.num_inference_steps = None
-        self.timesteps = self.sigmas = torch.linspace(
-            1, 1 / num_train_timesteps, num_train_timesteps
-        )
-        self.delta_timesteps = self.timesteps - torch.cat(
-            [self.timesteps[1:], torch.zeros_like(self.timesteps[-1:])]
-        )
+        self.sampler = sampler
         self.shifting = shifting
         self.base_resolution = base_resolution
         self.target_shift_terminal = target_shift_terminal
+        self.timesteps = self.sigmas = self.get_initial_timesteps(
+            num_train_timesteps, shift=shift
+        )
+        self.shift = shift
 
-    def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
+    def get_initial_timesteps(
+        self, num_timesteps: int, shift: Optional[float] = None
+    ) -> Tensor:
+        if self.sampler == "Uniform":
+            return torch.linspace(1, 1 / num_timesteps, num_timesteps)
+        elif self.sampler == "LinearQuadratic":
+            return linear_quadratic_schedule(num_timesteps)
+        elif self.sampler == "Constant":
+            assert (
+                shift is not None
+            ), "Shift must be provided for constant time shift sampler."
+            return time_shift(
+                shift, 1, torch.linspace(1, 1 / num_timesteps, num_timesteps)
+            )
+
+    def shift_timesteps(self, samples_shape: torch.Size, timesteps: Tensor) -> Tensor:
         if self.shifting == "SD3":
             return sd3_resolution_dependent_timestep_shift(
-                samples, timesteps, self.target_shift_terminal
+                samples_shape, timesteps, self.target_shift_terminal
             )
         elif self.shifting == "SimpleDiffusion":
             return simple_diffusion_resolution_dependent_timestep_shift(
-                samples, timesteps, self.base_resolution
+                samples_shape, timesteps, self.base_resolution
             )
         return timesteps
 
     def set_timesteps(
         self,
-        num_inference_steps: int,
-        samples: Tensor,
+        num_inference_steps: Optional[int] = None,
+        samples_shape: Optional[torch.Size] = None,
+        timesteps: Optional[Tensor] = None,
         device: Union[str, torch.device] = None,
     ):
         """
         Sets the discrete timesteps used for the diffusion chain. Supporting function to be run before inference.
+        If `timesteps` are provided, they will be used instead of the scheduled timesteps.
 
         Args:
-            num_inference_steps (`int`): The number of diffusion steps used when generating samples.
-            samples (`Tensor`): A batch of samples with shape.
+            num_inference_steps (`int` *optional*): The number of diffusion steps used when generating samples.
+            samples_shape (`torch.Size` *optional*): The samples batch shape, used for shifting.
+            timesteps ('torch.Tensor' *optional*): Specific timesteps to use instead of scheduled timesteps.
             device (`Union[str, torch.device]`, *optional*): The device to which the timesteps tensor will be moved.
         """
-        num_inference_steps = min(self.config.num_train_timesteps, num_inference_steps)
-        timesteps = torch.linspace(1, 1 / num_inference_steps, num_inference_steps).to(
-            device
-        )
-        self.timesteps = self.shift_timesteps(samples, timesteps)
-        self.delta_timesteps = self.timesteps - torch.cat(
-            [self.timesteps[1:], torch.zeros_like(self.timesteps[-1:])]
-        )
+        if timesteps is not None and num_inference_steps is not None:
+            raise ValueError(
+                "You cannot provide both `timesteps` and `num_inference_steps`."
+            )
+        if timesteps is None:
+            num_inference_steps = min(
+                self.config.num_train_timesteps, num_inference_steps
+            )
+            timesteps = self.get_initial_timesteps(
+                num_inference_steps, shift=self.shift
+            ).to(device)
+            timesteps = self.shift_timesteps(samples_shape, timesteps)
+        else:
+            timesteps = torch.Tensor(timesteps).to(device)
+            num_inference_steps = len(timesteps)
+        self.timesteps = timesteps
         self.num_inference_steps = num_inference_steps
         self.sigmas = self.timesteps
 
@@ -254,38 +307,28 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         model_output: torch.FloatTensor,
         timestep: torch.FloatTensor,
         sample: torch.FloatTensor,
-        eta: float = 0.0,
-        use_clipped_model_output: bool = False,
-        generator=None,
-        variance_noise: Optional[torch.FloatTensor] = None,
         return_dict: bool = True,
+        stochastic_sampling: Optional[bool] = False,
+        **kwargs,
     ) -> Union[RectifiedFlowSchedulerOutput, Tuple]:
-        # pylint: disable=unused-argument
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
         process from the learned model outputs (most often the predicted noise).
+        z_{t_1} = z_t - \Delta_t * v
+        The method finds the next timestep that is lower than the input timestep(s) and denoises the latents
+        to that level. The input timestep(s) are not required to be one of the predefined timesteps.
 
         Args:
             model_output (`torch.FloatTensor`):
-                The direct output from learned diffusion model.
+                The direct output from learned diffusion model - the velocity,
             timestep (`float`):
-                The current discrete timestep in the diffusion chain.
+                The current discrete timestep in the diffusion chain (global or per-token).
             sample (`torch.FloatTensor`):
-                A current instance of a sample created by the diffusion process.
-            eta (`float`):
-                The weight of noise for added noise in diffusion step.
-            use_clipped_model_output (`bool`, defaults to `False`):
-                If `True`, computes "corrected" `model_output` from the clipped predicted original sample. Necessary
-                because predicted original sample is clipped to [-1, 1] when `self.config.clip_sample` is `True`. If no
-                clipping has happened, "corrected" `model_output` would coincide with the one provided as input and
-                `use_clipped_model_output` has no effect.
-            generator (`torch.Generator`, *optional*):
-                A random number generator.
-            variance_noise (`torch.FloatTensor`):
-                Alternative to generating noise with `generator` by directly providing the noise for the variance
-                itself. Useful for methods such as [`CycleDiffusion`].
+                A current latent tokens to be de-noised.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~schedulers.scheduling_ddim.DDIMSchedulerOutput`] or `tuple`.
+            stochastic_sampling (`bool`, *optional*, defaults to `False`):
+                Whether to use stochastic sampling for the sampling process.
 
         Returns:
             [`~schedulers.scheduling_utils.RectifiedFlowSchedulerOutput`] or `tuple`:
@@ -296,22 +339,34 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
             raise ValueError(
                 "Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler"
             )
+        t_eps = 1e-6  # Small epsilon to avoid numerical issues in timestep values
 
+        timesteps_padded = torch.cat(
+            [self.timesteps, torch.zeros(1, device=self.timesteps.device)]
+        )
+
+        # Find the next lower timestep(s) and compute the dt from the current timestep(s)
         if timestep.ndim == 0:
-            # Global timestep
-            current_index = (self.timesteps - timestep).abs().argmin()
-            dt = self.delta_timesteps.gather(0, current_index.unsqueeze(0))
-        else:
-            # Timestep per token
-            assert timestep.ndim == 2
-            current_index = (
-                (self.timesteps[:, None, None] - timestep[None]).abs().argmin(dim=0)
-            )
-            dt = self.delta_timesteps[current_index]
-            # Special treatment for zero timestep tokens - set dt to 0 so prev_sample = sample
-            dt = torch.where(timestep == 0.0, torch.zeros_like(dt), dt)[..., None]
+            # Global timestep case
+            lower_mask = timesteps_padded < timestep - t_eps
+            lower_timestep = timesteps_padded[lower_mask][0]  # Closest lower timestep
+            dt = timestep - lower_timestep
 
-        prev_sample = sample - dt * model_output
+        else:
+            # Per-token case
+            assert timestep.ndim == 2
+            lower_mask = timesteps_padded[:, None, None] < timestep[None] - t_eps
+            lower_timestep = lower_mask * timesteps_padded[:, None, None]
+            lower_timestep, _ = lower_timestep.max(dim=0)
+            dt = (timestep - lower_timestep)[..., None]
+
+        # Compute previous sample
+        if stochastic_sampling:
+            x0 = sample - timestep[..., None] * model_output
+            next_timestep = timestep[..., None] - dt
+            prev_sample = self.add_noise(x0, torch.randn_like(sample), next_timestep)
+        else:
+            prev_sample = sample - dt * model_output
 
         if not return_dict:
             return (prev_sample,)
